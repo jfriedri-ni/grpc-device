@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.12.0)
 
-project(ni_grpc_device_server C CXX)
+project(ni_grpc_device_server
+  LANGUAGES C CXX
+  VERSION 1.5.2)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CreateVirtualEnvironment)
@@ -8,34 +10,6 @@ include(CreateVirtualEnvironment)
 # Workaround for: https://bugs.chromium.org/p/boringssl/issues/detail?id=423
 if (CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
   set(CMAKE_SYSTEM_PROCESSOR "amd64")
-endif()
-
-#----------------------------------------------------------------------
-# Determine version using current branch Git tag (e.g. v1.5.2)
-#----------------------------------------------------------------------
-if(EXISTS "${CMAKE_SOURCE_DIR}/.git")
-  execute_process(
-    COMMAND git describe --tags
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    OUTPUT_VARIABLE GIT_TAG
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-  )
-else(EXISTS "${CMAKE_SOURCE_DIR}/.git")
-  set(GIT_TAG "v0.0.0")
-endif(EXISTS "${CMAKE_SOURCE_DIR}/.git")
-
-message(STATUS "Parsing Git tag ${GIT_TAG}.")
-
-if(GIT_TAG MATCHES "^v([0-9]+)\\.([0-9]+)\\.?([0-9]+)?")
-  set(GIT_TAG_MAJOR ${CMAKE_MATCH_1})
-  set(GIT_TAG_MINOR ${CMAKE_MATCH_2})
-  if(CMAKE_MATCH_3)
-    set(GIT_TAG_PATCH ${CMAKE_MATCH_3})
-  else()
-    set(GIT_TAG_PATCH "0")
-  endif()
-else()
-  message(FATAL_ERROR "Unable to parse Git tag. Tag must contain major and minor version with optional patch. e.g. \"v1.33.7\"")
 endif()
 
 #----------------------------------------------------------------------
@@ -66,6 +40,7 @@ else()
   set(_PROTOBUF_LIBPROTOBUF libprotobuf)
 endif()
 
+#----------------------------------------------------------------------
 CreateVirtualEnvironment(virtual_environment
   REQUIREMENTS_TXT
     ${CMAKE_SOURCE_DIR}/python_build_requirements.txt
@@ -73,6 +48,18 @@ CreateVirtualEnvironment(virtual_environment
     venv
   OUT_PYTHON_EXE
     PYTHON_EXE
+)
+
+#----------------------------------------------------------------------
+# Use the utfcpp targets directly from this build, only when not cross-compiling.
+#----------------------------------------------------------------------
+if(CMAKE_CROSSCOMPILING AND NOT _GRPC_DEVICE_NILRT_LEGACY_TOOLCHAIN)
+  find_package(utf8cpp REQUIRED)
+else()
+  add_subdirectory(third_party/utfcpp ${CMAKE_CURRENT_BINARY_DIR}/utfcpp EXCLUDE_FROM_ALL)
+endif()
+include_directories(
+  "./third_party/utfcpp/source"
 )
 
 #----------------------------------------------------------------------
@@ -227,6 +214,7 @@ set(nidriver_service_srcs
 # Proto file
 #----------------------------------------------------------------------
 get_filename_component(session_proto "source/protobuf/session.proto" ABSOLUTE)
+get_filename_component(session_utilities_proto "source/protobuf/session_utilities.proto" ABSOLUTE)
 get_filename_component(nidevice_proto "source/protobuf/nidevice.proto" ABSOLUTE)
 get_filename_component(debugsessionproperties_restricted_proto "source/protobuf_restricted/debugsessionproperties_restricted.proto" ABSOLUTE)
 get_filename_component(session_proto_path "${session_proto}" PATH)
@@ -262,6 +250,10 @@ set(session_proto_srcs "${proto_srcs_dir}/session.pb.cc")
 set(session_proto_hdrs "${proto_srcs_dir}/session.pb.h")
 set(session_grpc_srcs "${proto_srcs_dir}/session.grpc.pb.cc")
 set(session_grpc_hdrs "${proto_srcs_dir}/session.grpc.pb.h")
+set(session_utilities_proto_srcs "${proto_srcs_dir}/session_utilities.pb.cc")
+set(session_utilities_proto_hdrs "${proto_srcs_dir}/session_utilities.pb.h")
+set(session_utilities_grpc_srcs "${proto_srcs_dir}/session_utilities.grpc.pb.cc")
+set(session_utilities_grpc_hdrs "${proto_srcs_dir}/session_utilities.grpc.pb.h")
 set(nidevice_proto_srcs "${proto_srcs_dir}/nidevice.pb.cc")
 set(nidevice_proto_hdrs "${proto_srcs_dir}/nidevice.pb.h")
 set(debugsessionproperties_restricted_proto_srcs "${proto_srcs_dir}/debugsessionproperties_restricted.pb.cc")
@@ -278,6 +270,16 @@ GenerateGrpcSources(
     "${session_proto_hdrs}"
     "${session_grpc_srcs}"
     "${session_grpc_hdrs}"
+)
+
+GenerateGrpcSources(
+  PROTO
+    ${session_utilities_proto}
+  OUTPUT
+    "${session_utilities_proto_srcs}"
+    "${session_utilities_proto_hdrs}"
+    "${session_utilities_grpc_srcs}"
+    "${session_utilities_grpc_hdrs}"
 )
 
 GenerateGrpcSources(
@@ -338,6 +340,8 @@ add_executable(ni_grpc_device_server
    ${nidevice_proto_srcs}
    ${session_proto_srcs}
    ${session_grpc_srcs}
+   ${session_utilities_proto_srcs}
+   ${session_utilities_grpc_srcs}
    ${debugsessionproperties_restricted_proto_srcs}
    ${debugsessionproperties_restricted_grpc_srcs}
    ${nidriver_service_srcs})
@@ -369,6 +373,7 @@ target_link_libraries(ni_grpc_device_server
    ${_PROTOBUF_LIBPROTOBUF}
    ${CMAKE_DL_LIBS}
    nlohmann_json::nlohmann_json
+   utf8cpp
    )
 
 set_target_properties(ni_grpc_device_server PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
@@ -385,7 +390,7 @@ endif()
 add_custom_command(
    TARGET ni_grpc_device_server POST_BUILD
    COMMAND  ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/source/config/insecure_config.json
+            ${CMAKE_SOURCE_DIR}/source/config/localhost_config.json
             $<TARGET_FILE_DIR:ni_grpc_device_server>/server_config.json)
 
 #----------------------------------------------------------------------
@@ -428,6 +433,8 @@ add_executable(IntegrationTestsRunner
     ${nidevice_proto_srcs}
     ${session_proto_srcs}
     ${session_grpc_srcs}
+    ${session_utilities_proto_srcs}
+    ${session_utilities_grpc_srcs}
     ${debugsessionproperties_restricted_proto_srcs}
     ${debugsessionproperties_restricted_grpc_srcs}
     "${proto_srcs_dir}/nifake.pb.cc"
@@ -491,6 +498,8 @@ add_executable(UnitTestsRunner
     ${nidevice_proto_srcs}
     ${session_proto_srcs}
     ${session_grpc_srcs}
+    ${session_utilities_proto_srcs}
+    ${session_utilities_grpc_srcs}
     ${debugsessionproperties_restricted_proto_srcs}
     ${debugsessionproperties_restricted_grpc_srcs}
     "${proto_srcs_dir}/nifake.pb.cc"
@@ -589,6 +598,8 @@ set(system_test_runner_sources
   ${nidevice_proto_srcs}
   ${session_proto_srcs}
   ${session_grpc_srcs}
+  ${session_utilities_proto_srcs}
+  ${session_utilities_grpc_srcs}
   ${debugsessionproperties_restricted_proto_srcs}
   ${debugsessionproperties_restricted_grpc_srcs}
   ${nidriver_service_srcs}
